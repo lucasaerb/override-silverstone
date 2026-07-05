@@ -1,0 +1,26 @@
+# Derived from silverstone_tumftm.csv (TUMFTM racetrack-database centerline, 1178 pts, closed loop 5886.8 m)
+# Corner apex = point of max smoothed curvature. Distances measured along centerline from dataset start,
+# which shape-matching confirms is the current start/finish line on the Hamilton Straight.
+# centerline_min_radius_m is the CENTERLINE radius; the driven racing line radius is typically 1.5-3x larger.
+# direction: R = right-hander, L = left-hander (clockwise track).
+turn,name,seg_start_m,seg_end_m,apex_dist_m,centerline_min_radius_m,direction
+T1,Abbey,375,465,395,40,R
+T2,Farm Curve,565,710,645,102,L
+T3,Village,850,935,894,25,R
+T4,The Loop,1000,1150,1044,17,L
+T5,Aintree,1150,1294,1230,60,L
+T6,Brooklands,1889,2049,2004,41,L
+T7,Luffield,2074,2309,2179,44,R
+T8,Woodcote,2414,2628,2500,78,R
+T9,Copse,3008,3183,3133,60,R
+T10,Maggotts,3568,3673,3613,157,L
+T11,Becketts 1,3683,3758,3713,57,R
+T12,Becketts 2,3808,3943,3888,89,L
+T13,Becketts 3,3953,4133,4018,68,R
+T14,Chapel,4148,4228,4193,84,L
+-,Hangar Straight kink,4768,4788,4778,433,R
+T15,Stowe,4953,5162,5083,72,R
+-,Vale approach curve,5177,5327,5247,405,L
+T16,Vale,5487,5547,5517,23,L
+T17,Club (apex 1),5557,5680,5597,30,R
+T18,Club (exit phase),5680,5807,5720,60,R

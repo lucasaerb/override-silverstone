@@ -1,0 +1,223 @@
+/**
+ * Post-race Engineer's Debrief — the evidence layer on the result screen.
+ * Reuses the broadcast-glass language of screens.css (papaya = you, teal =
+ * optimal, green = deploy value, blue = lift) without editing it. Scoped under
+ * .analysis-panel so it never collides with the existing result cards.
+ */
+
+.analysis-panel {
+  background: linear-gradient(180deg, rgba(20, 27, 38, 0.72), rgba(12, 17, 24, 0.82));
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 14px;
+  padding: 15px 16px 16px;
+  backdrop-filter: blur(10px);
+}
+
+.analysis-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.analysis-title {
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 0.18em;
+  color: #e8eef5;
+}
+.analysis-status {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  color: #9aa6b4;
+  font-variant-numeric: tabular-nums;
+}
+/* while loading, dim the status; when ready, retire it */
+.analysis-status::before { content: '◷ '; opacity: 0.7; }
+.analysis-panel.is-ready .analysis-status { display: none; }
+.analysis-panel.is-failed .analysis-status::before { content: '⚠ '; }
+
+/* body hidden until the solve resolves, then fades in */
+.analysis-body {
+  display: none;
+  flex-direction: column;
+  gap: 12px;
+}
+.analysis-panel.is-ready .analysis-body {
+  display: flex;
+  animation: an-fade 0.28s ease both;
+}
+@keyframes an-fade {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.analysis-cols {
+  display: flex;
+  gap: 14px;
+  align-items: stretch;
+}
+.an-card {
+  background: rgba(10, 15, 22, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
+  padding: 13px 14px;
+  min-width: 0;
+}
+.an-vs { flex: 0 0 40%; display: flex; flex-direction: column; }
+.an-zones { flex: 1 1 auto; }
+
+/* the .result-card-title class is reused here (defined in screens.css) */
+
+/* ---- pace headline */
+.an-headline {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin: 8px 0 12px;
+}
+.an-big {
+  font-size: 40px;
+  font-weight: 900;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  letter-spacing: -0.01em;
+}
+.an-big.is-onpace { color: #3ddc84; }
+.an-big.is-close { color: #ff8412; }
+.an-big.is-far { color: #ff6b6b; }
+.an-headline-sub {
+  font-size: 12px;
+  color: #9aa6b4;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  max-width: 120px;
+  line-height: 1.25;
+}
+
+.an-stats {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px 14px;
+  margin-bottom: 11px;
+}
+.an-stats > div { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.an-l {
+  font-size: 9.5px;
+  letter-spacing: 0.08em;
+  color: #9aa6b4;
+  text-transform: uppercase;
+}
+.an-l em { font-style: normal; opacity: 0.65; }
+.an-v {
+  font-size: 18px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  color: #e8eef5;
+}
+.an-v.an-opt, .an-v.an-fly { color: #2ab6b0; }
+
+.an-encourage {
+  font-size: 12px;
+  line-height: 1.5;
+  color: #cdd6e0;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  padding-top: 10px;
+  margin-top: auto;
+}
+
+/* ---- ranked per-zone list */
+.an-zone-list {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.an-zone-item {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1.1fr) minmax(0, 1.6fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 11px;
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-left-width: 3px;
+}
+.an-zone-dot { width: 8px; height: 8px; border-radius: 50%; }
+.an-zone-name {
+  font-size: 13px;
+  font-weight: 750;
+  color: #e8eef5;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.an-zone-msg {
+  font-size: 11.5px;
+  color: #9aa6b4;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.an-zone-impact {
+  font-size: 15px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+.an-zone-item.is-gain { border-left-color: #3ddc84; }
+.an-zone-item.is-gain .an-zone-dot { background: #3ddc84; }
+.an-zone-item.is-gain .an-zone-impact { color: #3ddc84; }
+.an-zone-item.is-harvest { border-left-color: #37a6ff; }
+.an-zone-item.is-harvest .an-zone-dot { background: #37a6ff; }
+.an-zone-item.is-harvest .an-zone-impact { color: #37a6ff; }
+.an-zone-item.is-waste { border-left-color: #ff6b6b; }
+.an-zone-item.is-waste .an-zone-dot { background: #ff6b6b; }
+.an-zone-item.is-waste .an-zone-impact { color: #ff6b6b; }
+.an-zone-empty {
+  font-size: 12px;
+  color: #3ddc84;
+  line-height: 1.5;
+  padding: 10px 4px;
+}
+
+/* ---- deploy strip */
+.an-strip-canvas {
+  width: 100%;
+  height: auto;
+  display: block;
+  background: rgba(0, 0, 0, 0.28);
+  border-radius: 8px;
+  margin-top: 6px;
+}
+.an-strip-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  font-size: 11px;
+  color: #9aa6b4;
+  margin-top: 9px;
+}
+.an-lg { display: inline-flex; align-items: center; }
+.an-lg::before {
+  content: '';
+  width: 11px;
+  height: 11px;
+  border-radius: 2px;
+  margin-right: 6px;
+}
+.an-lg-you::before { background: #ff8412; }
+.an-lg-opt::before { background: transparent; border: 2px solid #2ab6b0; }
+.an-lg-val::before { background: rgba(61, 220, 132, 0.5); }
+.an-lg-lift::before { background: #37a6ff; }
+
+/* keep the debrief readable when the viewport gets tight */
+@media (max-width: 720px) {
+  .analysis-cols { flex-direction: column; }
+  .an-vs { flex: 1 1 auto; }
+  .an-zone-item { grid-template-columns: auto 1fr auto; }
+  .an-zone-msg { display: none; }
+}

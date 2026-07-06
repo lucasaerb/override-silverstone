@@ -290,11 +290,15 @@ async function boot(): Promise<void> {
   const myMpInput = { boostHeld: false, aggressiveness: 1 };  // local player's own input
   let myName = 'Player';
   let lastNetSend = 0;
-  // matchmaking (quick match): a fixed public room; host is elected by lowest id
-  let matchmaking = false;
+  // matchmaking (quick match): a shared PAIRING room hands each group of 2-4 its
+  // own private race room, so unlimited matches run concurrently.
+  let matchmaking = false;                 // in quick-match (pairing or private match)
+  let pairing = false;                     // in the shared pairing room (not yet grouped)
+  const seekers = new Map<string, string>(); // pairing room: peerId -> name
+  let gatherTimer: ReturnType<typeof setTimeout> | null = null;
   let matchTimer: ReturnType<typeof setTimeout> | null = null;
   let matchCountN = 0;
-  const MATCH_ROOM = 'OVERRIDE-QUICKMATCH';
+  const MATCH_ROOM = 'OVERRIDE-QUICKMATCH-V1';
 
   // race capture
   let gapHistory: number[] = [];
@@ -526,22 +530,74 @@ async function boot(): Promise<void> {
     }
   }
 
-  // ---- matchmaking (quick match): fixed room, host elected by lowest peer id
+  // ---- matchmaking (quick match) --------------------------------------------
+  // Phase 1: everyone searching joins the shared PAIRING room. The lowest-id
+  // seeker forms a group of up to 4 and hands them a fresh private room code.
+  // Phase 2: that group plays in its OWN room — so many groups race at once.
   function startMatchmaking(): void {
     leaveMp();
-    matchmaking = true;
-    netRole = null;
-    roster = [];
+    matchmaking = true; pairing = true;
+    netRole = null; roster = []; seekers.clear();
     mmNameInput.value = myName === 'Player' ? '' : myName;
     net = joinRoom(MATCH_ROOM, 'guest');
+    wirePairing();
+    net.send({ t: 'seek', name: myName });
+    mmOverlay.style.display = 'flex';
+    renderMatchmaking();
+    scheduleFormGroup();
+  }
+
+  function wirePairing(): void {
+    if (!net) return;
+    net.onPeerJoin(() => { net?.send({ t: 'seek', name: myName }); scheduleFormGroup(); renderMatchmaking(); });
+    net.onPeerLeave((pid) => { seekers.delete(pid); scheduleFormGroup(); renderMatchmaking(); });
+    net.onMessage((m, from) => {
+      const msg = m as { t: string; name?: string; members?: string[]; code?: string };
+      if (msg.t === 'seek') { seekers.set(from, String(msg.name ?? 'Player')); scheduleFormGroup(); renderMatchmaking(); }
+      else if (msg.t === 'group' && Array.isArray(msg.members) && msg.members.includes(net?.selfId ?? '')) {
+        enterMatchRoom(String(msg.code));
+      }
+    });
+  }
+
+  /** the lowest-id seeker (including self) leads group formation */
+  function amPairingLeader(): boolean {
+    if (!net) return false;
+    return [net.selfId, ...seekers.keys()].sort()[0] === net.selfId;
+  }
+  function scheduleFormGroup(): void {
+    if (!pairing || !net) return;
+    const total = seekers.size + 1;
+    if (total < 2 || !amPairingLeader()) { if (gatherTimer) { clearTimeout(gatherTimer); gatherTimer = null; } return; }
+    if (gatherTimer) return; // already gathering a group
+    gatherTimer = setTimeout(formGroup, total >= 4 ? 500 : 2500); // wait briefly for a 3rd/4th
+  }
+  function formGroup(): void {
+    gatherTimer = null;
+    if (!pairing || !net || !amPairingLeader()) return;
+    const members = [net.selfId, ...[...seekers.keys()].sort()].slice(0, 4);
+    const code = `M${makeRoomCode()}${makeRoomCode().slice(0, 2)}`; // fresh private room
+    net.send({ t: 'group', members, code });
+    // let the broadcast reach members before we drop the pairing room
+    setTimeout(() => enterMatchRoom(code), 250);
+  }
+
+  /** leave pairing, join a private group room, and run the auto-start match */
+  function enterMatchRoom(code: string): void {
+    if (!matchmaking) return;
+    if (gatherTimer) { clearTimeout(gatherTimer); gatherTimer = null; }
+    pairing = false; seekers.clear();
+    if (net) { net.leave(); net = null; }
+    netRole = null; roster = [];
+    net = joinRoom(code, 'guest');
     wireNet();
     net.send({ t: 'join', name: myName });
     electRole();
-    mmOverlay.style.display = 'flex';
     renderMatchmaking();
   }
+
   function electRole(): void {
-    if (!matchmaking || !net) return;
+    if (!matchmaking || pairing || !net) return;
     const ids = [net.selfId, ...net.peers()].sort();
     const role: NetRole = ids[0] === net.selfId ? 'host' : 'guest';
     if (role === netRole) return;
@@ -559,12 +615,12 @@ async function boot(): Promise<void> {
     renderMatchmaking();
   }
   function checkAutoStart(): void {
-    if (!matchmaking || netRole !== 'host') return;
+    if (!matchmaking || pairing || netRole !== 'host') return;
     if (roster.length >= 2 && matchTimer === null) startMatchCountdown();
     else if (roster.length < 2) cancelMatchCountdown();
   }
   function startMatchCountdown(): void {
-    matchCountN = 5; // seconds — lets a 3rd/4th player still drop in
+    matchCountN = 3;
     const tick = (): void => {
       if (!matchmaking || netRole !== 'host' || roster.length < 2) { cancelMatchCountdown(); return; }
       renderMatchmaking();
@@ -584,11 +640,14 @@ async function boot(): Promise<void> {
     const n = net ? net.peers().length + 1 : 1;
     const status = mmOverlay.querySelector('.mm-status')!;
     const count = mmOverlay.querySelector('.mm-count')!;
-    count.textContent = `${n} ${n === 1 ? 'player' : 'players'} in the lobby`;
-    if (matchTimer !== null && matchCountN >= 0) status.textContent = `Match found! Starting in ${matchCountN}…`;
-    else status.textContent = n >= 2 ? 'Opponents found — waiting to start…' : 'Searching for players…';
+    if (pairing) {
+      count.textContent = `${n} searching now`;
+      status.textContent = n >= 2 ? 'Players found — forming a match…' : 'Searching for players…';
+    } else {
+      count.textContent = `${n} in your match`;
+      status.textContent = matchTimer !== null ? `Match found! Starting in ${matchCountN}…` : 'Match ready — starting…';
+    }
   }
-
   function hostStartMp(): void {
     if (netRole !== 'host' || roster.length < 2 || !roster.every((e) => e.ready)) return;
     const seed = Math.floor(Math.random() * 1e6);
@@ -649,7 +708,8 @@ async function boot(): Promise<void> {
 
   function leaveMp(): void {
     cancelMatchCountdown();
-    matchmaking = false;
+    if (gatherTimer) { clearTimeout(gatherTimer); gatherTimer = null; }
+    matchmaking = false; pairing = false; seekers.clear();
     mmOverlay.style.display = 'none';
     if (net) { net.leave(); net = null; }
     netRole = null; roster = []; localCarId = 'player'; netState = null; hostInputs.clear();

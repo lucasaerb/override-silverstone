@@ -190,6 +190,21 @@ async function boot(): Promise<void> {
   const minimap = createMinimap(raceUi, track);
   const banners = createBanners(raceUi);
   const audio = createAudio();
+
+  // persistent controls bar along the bottom so keys are always discoverable
+  const controlsBar = document.createElement('div');
+  controlsBar.className = 'controls-bar';
+  const controlKey = (k: string, label: string): string => `<span class="ctrl"><kbd>${k}</kbd>${label}</span>`;
+  const setControls = (m: GameMode): void => {
+    controlsBar.innerHTML =
+      controlKey('SPACE', 'deploy') +
+      controlKey('↑ ↓', 'trim') +
+      controlKey('C', 'camera') +
+      controlKey('T', 'telemetry') +
+      (m === 'multiplayer' ? '' : controlKey('M', 'live map')) +
+      controlKey('ESC', 'pause');
+  };
+  raceUi.appendChild(controlsBar);
   const startAudio = (): void => {
     audio.resume();
     window.removeEventListener('pointerdown', startAudio);
@@ -200,6 +215,25 @@ async function boot(): Promise<void> {
   const startLights = createStartLights(container);
   const onboarding = createOnboarding(container);
   const lobby = createLobby(container);
+
+  // matchmaking overlay (quick match)
+  const mmOverlay = document.createElement('div');
+  mmOverlay.className = 'mm-overlay';
+  mmOverlay.style.display = 'none';
+  mmOverlay.innerHTML = `
+    <div class="mm-card">
+      <div class="mm-kicker">QUICK MATCH</div>
+      <div class="mm-title">FINDING A MATCH</div>
+      <input class="mm-name" maxlength="14" placeholder="Your name" />
+      <div class="mm-spinner"></div>
+      <div class="mm-status">Searching for players…</div>
+      <div class="mm-count">1 in the lobby</div>
+      <button class="btn mm-cancel">Cancel</button>
+    </div>`;
+  container.appendChild(mmOverlay);
+  const mmNameInput = mmOverlay.querySelector<HTMLInputElement>('.mm-name')!;
+  mmNameInput.addEventListener('input', () => { myName = mmNameInput.value.trim() || 'Player'; if (netRole === 'host') { const e = roster.find((x) => x.peerId === net?.selfId); if (e) { e.name = myName; broadcastRoster(); } } else net?.send({ t: 'name', name: myName }); });
+  mmOverlay.querySelector('.mm-cancel')!.addEventListener('click', () => { leaveMp(); setScreen('modeselect'); });
 
   // ---- screens
   const menu = createMenuScreen(container);
@@ -256,6 +290,11 @@ async function boot(): Promise<void> {
   const myMpInput = { boostHeld: false, aggressiveness: 1 };  // local player's own input
   let myName = 'Player';
   let lastNetSend = 0;
+  // matchmaking (quick match): a fixed public room; host is elected by lowest id
+  let matchmaking = false;
+  let matchTimer: ReturnType<typeof setTimeout> | null = null;
+  let matchCountN = 0;
+  const MATCH_ROOM = 'OVERRIDE-QUICKMATCH';
 
   // race capture
   let gapHistory: number[] = [];
@@ -336,6 +375,7 @@ async function boot(): Promise<void> {
     if (next !== 'race') startLights.abort();
     menu.hide(); modeSelect.hide(); strategy.hide(); result.hide(); lobby.hide();
     raceUi.style.display = next === 'race' ? 'block' : 'none';
+    if (next === 'race') setControls(mode);
     overlayEl.style.display = 'none';
     pauseEl.style.display = 'none';
     overlayOpen = false; paused = false;
@@ -347,10 +387,11 @@ async function boot(): Promise<void> {
 
   menu.onStart(() => setScreen('modeselect'));
   modeSelect.onBack(() => setScreen('menu'));
-  modeSelect.onSelect((m) => {
-    mode = m;
-    if (m === 'multiplayer') { setScreen('lobby'); return; }
-    setScreen('strategy');
+  modeSelect.onSingle((m) => { mode = m; setScreen('strategy'); });
+  modeSelect.onMultiplayer((kind) => {
+    mode = 'multiplayer';
+    if (kind === 'find') startMatchmaking();
+    else setScreen('lobby');
   });
   strategy.onRace((s) => void startRace(s));
   result.onAgain(() => { if (mode === 'multiplayer') { leaveMp(); setScreen('modeselect'); } else void startRace(setup); });
@@ -414,14 +455,16 @@ async function boot(): Promise<void> {
   function wireNet(): void {
     if (!net) return;
     net.onPeerJoin(() => {
-      // a guest announces itself (with its name) to the host on connect
-      if (netRole === 'guest') net?.send({ t: 'join', name: myName });
-      updateLobbyPhase();
+      // announce ourselves (with our name); the host folds guests into the roster
+      net?.send({ t: 'join', name: myName });
+      if (matchmaking) electRole();
+      updateLobbyPhase(); renderMatchmaking();
     });
     net.onPeerLeave((peerId) => {
       if (netRole === 'host') { roster = roster.filter((e) => e.peerId !== peerId); broadcastRoster(); }
+      if (matchmaking) electRole();
       if (screen === 'race') banners.push('A PLAYER LEFT', 'info', undefined, 2500);
-      updateLobbyPhase();
+      updateLobbyPhase(); renderMatchmaking();
     });
     net.onMessage((m, from) => handleNetMsg(m as { t: string; [k: string]: unknown }, from));
     net.onInput((i, from) => {
@@ -443,13 +486,15 @@ async function boot(): Promise<void> {
   function hostAddOrUpdate(peerId: string, name: string): void {
     const existing = roster.find((e) => e.peerId === peerId);
     if (existing) { existing.name = name; }
-    else if (roster.length < 4) { roster.push({ peerId, name, carId: nextCarId(), ready: false }); }
+    else if (roster.length < 4) { roster.push({ peerId, name, carId: nextCarId(), ready: matchmaking }); } // quick match auto-readies
     broadcastRoster();
   }
   function broadcastRoster(): void {
     if (netRole !== 'host') return;
     net?.send({ t: 'roster', entries: roster, laps: lapsSetting });
     applyRosterToLobby();
+    renderMatchmaking();
+    checkAutoStart();
   }
   function applyRosterToLobby(): void {
     const players = roster.map((e) => ({
@@ -470,14 +515,78 @@ async function boot(): Promise<void> {
   }
 
   function handleNetMsg(msg: { t: string; [k: string]: unknown }, from: string): void {
+    if (msg.t === 'who') { net?.send({ t: 'join', name: myName }); return; } // matchmaking host asks for names
     if (netRole === 'host') {
       if (msg.t === 'join' || msg.t === 'name') hostAddOrUpdate(from, String(msg.name ?? 'Player'));
       else if (msg.t === 'ready') { const e = roster.find((x) => x.peerId === from); if (e) { e.ready = !!msg.ready; broadcastRoster(); } }
     } else {
-      if (msg.t === 'roster') { roster = msg.entries as RosterEntry[]; lapsSetting = Number(msg.laps) || SIM.RACE_LAPS; applyRosterToLobby(); }
+      if (msg.t === 'roster') { roster = msg.entries as RosterEntry[]; lapsSetting = Number(msg.laps) || SIM.RACE_LAPS; applyRosterToLobby(); renderMatchmaking(); }
       else if (msg.t === 'start') { roster = msg.entries as RosterEntry[]; lapsSetting = Number(msg.laps) || SIM.RACE_LAPS; startMpRace(roster, lapsSetting, Number(msg.seed)); }
       else if (msg.t === 'finish') { showMpResult(msg.results as MpResult[]); }
     }
+  }
+
+  // ---- matchmaking (quick match): fixed room, host elected by lowest peer id
+  function startMatchmaking(): void {
+    leaveMp();
+    matchmaking = true;
+    netRole = null;
+    roster = [];
+    mmNameInput.value = myName === 'Player' ? '' : myName;
+    net = joinRoom(MATCH_ROOM, 'guest');
+    wireNet();
+    net.send({ t: 'join', name: myName });
+    electRole();
+    mmOverlay.style.display = 'flex';
+    renderMatchmaking();
+  }
+  function electRole(): void {
+    if (!matchmaking || !net) return;
+    const ids = [net.selfId, ...net.peers()].sort();
+    const role: NetRole = ids[0] === net.selfId ? 'host' : 'guest';
+    if (role === netRole) return;
+    netRole = role;
+    if (role === 'host') {
+      // (re)build the roster: self on pole, then up to 3 known peers, all auto-ready
+      const self: RosterEntry = { peerId: net.selfId, name: myName, carId: 'p0', ready: true };
+      const others = net.peers().slice(0, 3).map((pid, i) => ({
+        peerId: pid, name: roster.find((e) => e.peerId === pid)?.name ?? 'Player', carId: `p${i + 1}`, ready: true,
+      }));
+      roster = [self, ...others];
+      net.send({ t: 'who' }); // ask peers to (re)send their names
+      broadcastRoster();
+    }
+    renderMatchmaking();
+  }
+  function checkAutoStart(): void {
+    if (!matchmaking || netRole !== 'host') return;
+    if (roster.length >= 2 && matchTimer === null) startMatchCountdown();
+    else if (roster.length < 2) cancelMatchCountdown();
+  }
+  function startMatchCountdown(): void {
+    matchCountN = 5; // seconds — lets a 3rd/4th player still drop in
+    const tick = (): void => {
+      if (!matchmaking || netRole !== 'host' || roster.length < 2) { cancelMatchCountdown(); return; }
+      renderMatchmaking();
+      if (matchCountN <= 0) { matchTimer = null; hostStartMp(); return; }
+      matchCountN--;
+      matchTimer = setTimeout(tick, 1000);
+    };
+    tick();
+  }
+  function cancelMatchCountdown(): void {
+    if (matchTimer !== null) { clearTimeout(matchTimer); matchTimer = null; }
+    matchCountN = 0;
+    renderMatchmaking();
+  }
+  function renderMatchmaking(): void {
+    if (!matchmaking || mmOverlay.style.display === 'none') return;
+    const n = net ? net.peers().length + 1 : 1;
+    const status = mmOverlay.querySelector('.mm-status')!;
+    const count = mmOverlay.querySelector('.mm-count')!;
+    count.textContent = `${n} ${n === 1 ? 'player' : 'players'} in the lobby`;
+    if (matchTimer !== null && matchCountN >= 0) status.textContent = `Match found! Starting in ${matchCountN}…`;
+    else status.textContent = n >= 2 ? 'Opponents found — waiting to start…' : 'Searching for players…';
   }
 
   function hostStartMp(): void {
@@ -506,6 +615,8 @@ async function boot(): Promise<void> {
       race = null; // guest renders host snapshots
       resetRaceCapture();
     }
+    cancelMatchCountdown();
+    mmOverlay.style.display = 'none';
     banners.clear();
     banners.push('HEAD-TO-HEAD', 'info', `${entries.length} cars · hold SPACE to deploy — best strategist wins`, 2600);
     setScreen('race');
@@ -537,6 +648,9 @@ async function boot(): Promise<void> {
   }
 
   function leaveMp(): void {
+    cancelMatchCountdown();
+    matchmaking = false;
+    mmOverlay.style.display = 'none';
     if (net) { net.leave(); net = null; }
     netRole = null; roster = []; localCarId = 'player'; netState = null; hostInputs.clear();
   }

@@ -78,6 +78,45 @@
 .menu-credit a { color: var(--ink-dim); text-decoration: none; border-bottom: 1px solid rgba(255, 132, 18, 0.45); transition: color 0.15s, border-color 0.15s; }
 .menu-credit a:hover { color: var(--papaya); border-bottom-color: var(--papaya); }
 
+/* persistent controls hint bar along the bottom of the race screen */
+.controls-bar {
+  position: absolute; left: 50%; bottom: 10px; transform: translateX(-50%);
+  display: flex; gap: 4px; z-index: 7; pointer-events: none;
+  padding: 5px 8px; border-radius: 12px; white-space: nowrap;
+  background: rgba(9, 11, 15, 0.5); border: 1px solid var(--hair);
+  -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);
+}
+.controls-bar .ctrl { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--ink-dim); letter-spacing: 0.05em; padding: 0 5px; }
+.controls-bar kbd {
+  font-family: inherit; font-size: 10px; font-weight: 700; color: var(--ink);
+  background: rgba(255, 255, 255, 0.09); border: 1px solid var(--hair); border-bottom-width: 2px;
+  border-radius: 5px; padding: 2px 6px; min-width: 13px; text-align: center;
+}
+
+/* matchmaking (quick match) overlay */
+.mm-overlay { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; z-index: 24; }
+.mm-card {
+  width: min(400px, 92vw); background: var(--glass, rgba(18, 21, 27, 0.9)); border: 1px solid var(--hair);
+  border-radius: 18px; padding: 32px 28px; text-align: center; display: flex; flex-direction: column;
+  align-items: center; gap: 14px; -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5);
+}
+.mm-kicker { font-size: 11px; letter-spacing: 0.4em; color: var(--papaya); font-weight: 700; }
+.mm-title { font-size: 26px; font-weight: 800; letter-spacing: 0.02em; color: var(--ink); }
+.mm-name {
+  width: 100%; padding: 10px 12px; background: rgba(255, 255, 255, 0.06); border: 1px solid var(--hair);
+  border-radius: 10px; color: var(--ink); font-size: 14px; text-align: center; font-family: inherit;
+}
+.mm-name:focus { outline: none; border-color: var(--papaya); }
+.mm-spinner {
+  width: 40px; height: 40px; border-radius: 50%; margin: 4px 0;
+  border: 3px solid rgba(255, 255, 255, 0.12); border-top-color: var(--papaya); animation: mm-spin 0.9s linear infinite;
+}
+@keyframes mm-spin { to { transform: rotate(360deg); } }
+.mm-status { font-size: 14px; color: var(--ink); font-weight: 600; }
+.mm-count { font-size: 12px; color: var(--ink-dim); letter-spacing: 0.05em; }
+.mm-cancel { margin-top: 6px; }
+
 /* ---------------------------------------------------------------- strategy */
 .strategy-screen {
   flex-direction: column;

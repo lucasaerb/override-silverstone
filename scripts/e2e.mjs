@@ -57,18 +57,23 @@ try {
   check('boots on the menu screen', (await page.evaluate(() => window.__game.getScreen())) === 'menu');
   check('no boot errors', (await page.evaluate(() => window.__game.errors.length)) === 0);
 
-  // ---- mode select: all four modes reachable
+  // ---- mode select: two-level (Single Player / Multiplayer)
   console.log('mode select');
   const modes = await page.evaluate(async () => {
     const g = window.__game;
     g.goto('modeselect');
     await new Promise((r) => setTimeout(r, 150));
-    const cards = document.querySelectorAll('.mode-card').length;
-    document.querySelector('.mode-card[data-mode="timetrial"]').click();
+    const topCards = document.querySelectorAll('.mode-grid[data-view="top"] .mode-card').length;
+    const multiExists = !!document.querySelector('.mode-grid[data-view="top"] .mode-card[data-key="multi"]');
+    document.querySelector('.mode-card[data-key="single"]').click(); // → single-player submodes
+    await new Promise((r) => setTimeout(r, 120));
+    const spCards = document.querySelectorAll('.mode-grid[data-view="single"] .mode-card').length;
+    document.querySelector('.mode-card[data-key="timetrial"]').click();
     await new Promise((r) => setTimeout(r, 150));
-    return { screen: g.getScreen(), cards, mode: g.getMode() };
+    return { screen: g.getScreen(), topCards, multiExists, spCards, mode: g.getMode() };
   });
-  check('mode-select shows four modes', modes.cards === 4);
+  check('top level shows Single Player + Multiplayer', modes.topCards === 2 && modes.multiExists);
+  check('Single Player has three modes', modes.spCards === 3, `(${modes.spCards})`);
   check('selecting a mode opens the strategy screen', modes.screen === 'strategy' && modes.mode === 'timetrial');
 
   // ---- strategy screen: projection responds to the map

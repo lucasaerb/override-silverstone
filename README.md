@@ -85,16 +85,18 @@ Requires Node 20+. No server or API keys — it's fully static.
 ## Game modes
 
 A first-run **click-through tutorial** teaches the core loop (re-openable any time via the
-**?** button). From **Menu → START** you pick a mode:
+**?** button). From **Menu → START** you pick **Single Player** or **Multiplayer**. An always-on
+controls bar along the bottom of the race (**SPACE** deploy · **↑↓** trim · **C** camera · **T**
+telemetry · **M** live map · **ESC** pause) keeps the keys discoverable.
 
 - **Time Trial** — solo hot-lap against your own saved **ghost**; keep retrying to beat your best.
 - **Optimal Lap** — the sim solves the fastest deployment strategy, then drives the perfect
   lap while you watch and learn.
 - **Overtake Challenge** — start 1.0 s behind a strong (near-optimal) rival over 3 laps; use
   your within-1-second **Manual Override** edge (extra power + 0.5 MJ) to pass and hold the lead.
-- **Head-to-Head (2–4 players)** — race up to three friends with a share code. Enter your
-  name, pick the lap count, and everyone lines up on a colour-coded grid with floating name
-  labels. **No server hosts the session**: WebRTC runs peer-to-peer (via trystero's public
+- **Head-to-Head (2–4 players)** — **Find a Match** to be paired with anyone else searching
+  right now, or **Play with Friends** with a share code. Enter your name, pick the lap count,
+  and everyone lines up on a colour-coded grid with floating name labels. **No server hosts the session**: WebRTC runs peer-to-peer (via trystero's public
   relays for cross-device signaling, or BroadcastChannel for tabs on the same machine). Same
   car, same grip — the better energy strategist wins. Host-authoritative netcode keeps every
   car in sync; the race ends on a full finishing **classification** with a clear winner.

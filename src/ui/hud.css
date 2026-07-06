@@ -190,7 +190,7 @@
 
 .hud-bottom-center {
   position: absolute;
-  bottom: 16px;
+  bottom: 44px;
   left: 50%;
   transform: translateX(-50%);
   display: flex;
@@ -340,7 +340,7 @@
 
 .hud-deploy-badge {
   position: absolute;
-  bottom: 118px;
+  bottom: 146px;
   left: 50%;
   transform: translateX(-50%) translateY(6px);
   font-size: 15px;

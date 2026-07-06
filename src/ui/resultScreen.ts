@@ -45,6 +45,24 @@ export interface RaceResult {
     title: string;
     note: string;
   };
+  /**
+   * Multiplayer finishing classification (2-4 cars), sorted 1..N by the lead.
+   * When present in `mode: 'multiplayer'`, the result screen renders a winner
+   * banner + classification table INSTEAD of the head-to-head gap/rival layout.
+   * `gapText` is preformatted ("" for the winner, "+1.234" or "+1 LAP" others).
+   */
+  classification?: Array<{
+    /** 1-based finishing order */
+    position: number;
+    name: string;
+    /** car's CSS colour (hex) for the swatch */
+    color: string;
+    /** preformatted gap ("" for P1, "+1.234", "+1 LAP") */
+    gapText: string;
+    laps: number;
+    /** the local player's row */
+    you: boolean;
+  }>;
 }
 
 export interface ResultScreenHandle {
@@ -59,6 +77,74 @@ export interface ResultScreenHandle {
 // on-brand colours (mirror screens.css so we own no cross-file styling here)
 const C_PAPAYA = '#ff8412'; // player / you
 const C_TEAL = '#2ab6b0'; // optimal
+
+// escape text going into innerHTML (multiplayer names arrive over the network)
+function esc(s: string): string {
+  return String(s).replace(/[&<>"']/g, (c) =>
+    c === '&' ? '&amp;' : c === '<' ? '&lt;' : c === '>' ? '&gt;' : c === '"' ? '&quot;' : '&#39;');
+}
+// only allow a plain CSS colour token into the swatch style attribute
+function safeColor(c: string): string {
+  return /^(#[0-9a-fA-F]{3,8}|rgb\(\s*[\d.]+\s*,\s*[\d.]+\s*,\s*[\d.]+\s*\)|rgba\(\s*[\d.]+\s*,\s*[\d.]+\s*,\s*[\d.]+\s*,\s*[\d.]+\s*\))$/.test(c)
+    ? c : C_PAPAYA;
+}
+
+// styles for the NEW classification elements only — id-guarded so we inject once
+// and never touch screens.css (all shared tokens are reused from there).
+const CLASSIFY_CSS = `
+.result-screen .result-classify { display: none; flex-direction: column; gap: 16px; }
+.result-screen.is-classification .result-classify { display: flex; }
+.result-screen.is-classification .result-verdict,
+.result-screen.is-classification .result-cols,
+.result-screen.is-classification .analysis-panel { display: none !important; }
+
+.rc-banner {
+  display: flex; align-items: center; justify-content: center; gap: 16px; line-height: 1;
+  text-align: center; font-weight: 900; letter-spacing: 0.03em;
+  font-size: clamp(30px, 5.4vw, 54px); color: var(--papaya);
+  padding: 20px 24px; border-radius: 16px;
+  border: 1px solid rgba(255, 132, 18, 0.5);
+  background: radial-gradient(130% 180% at 50% -10%, rgba(255, 132, 18, 0.24), rgba(255, 132, 18, 0.05));
+  box-shadow: 0 12px 54px rgba(255, 132, 18, 0.34);
+  text-shadow: 0 6px 44px rgba(255, 132, 18, 0.5);
+}
+.rc-trophy { font-size: 0.92em; filter: drop-shadow(0 4px 16px rgba(255, 190, 90, 0.65)); }
+
+.rc-table {
+  background: var(--glass); border: 1px solid var(--hair); border-radius: 14px;
+  padding: 8px; font-variant-numeric: tabular-nums;
+}
+.rc-row {
+  display: grid; grid-template-columns: 58px 1fr auto minmax(88px, auto);
+  align-items: center; gap: 14px; padding: 12px 14px;
+  border-radius: 10px; border: 1px solid transparent;
+}
+.rc-row + .rc-row { margin-top: 2px; }
+.rc-head { padding: 6px 14px 8px; font-size: 10px; letter-spacing: 0.18em; color: var(--ink-dim); font-weight: 700; }
+.rc-head .rc-laps, .rc-head .rc-gap { text-align: right; }
+.rc-pos { font-size: 19px; font-weight: 800; color: var(--ink-dim); letter-spacing: 0.02em; }
+.rc-head .rc-pos { font-size: 10px; }
+.rc-car { display: flex; align-items: center; gap: 11px; min-width: 0; }
+.rc-swatch { width: 15px; height: 15px; border-radius: 4px; flex: 0 0 auto; box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.45); }
+.rc-name { font-size: 16px; font-weight: 700; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rc-you-tag { font-weight: 650; opacity: 0.72; }
+.rc-laps { font-size: 13px; color: var(--ink-dim); text-align: right; }
+.rc-gap { font-size: 15px; font-weight: 750; color: var(--ink); text-align: right; }
+
+.rc-row.is-p1 { background: linear-gradient(90deg, rgba(255, 209, 102, 0.13), rgba(255, 209, 102, 0.02)); border-color: rgba(255, 209, 102, 0.42); }
+.rc-row.is-p1 .rc-pos { color: #ffd166; }
+.rc-row.is-you { background: rgba(255, 132, 18, 0.11); border-color: rgba(255, 132, 18, 0.5); }
+.rc-row.is-you .rc-name { color: var(--papaya); }
+.rc-row.is-you.is-p1 { background: linear-gradient(90deg, rgba(255, 132, 18, 0.18), rgba(255, 209, 102, 0.05)); border-color: rgba(255, 180, 90, 0.62); }
+`;
+
+function ensureClassifyStyles(): void {
+  if (typeof document === 'undefined' || document.getElementById('f1-result-classify')) return;
+  const style = document.createElement('style');
+  style.id = 'f1-result-classify';
+  style.textContent = CLASSIFY_CSS;
+  document.head.appendChild(style);
+}
 
 function fmtLap(t: number | undefined): string {
   if (t == null || !Number.isFinite(t)) return '—';
@@ -140,8 +226,21 @@ export function createResultScreen(container: HTMLElement, track: TrackData): Re
   const root = document.createElement('div');
   root.className = 'screen result-screen';
   root.style.display = 'none';
+  ensureClassifyStyles();
   root.innerHTML = `
     <div class="result-inner">
+      <div class="result-classify">
+        <div class="rc-banner"><span class="rc-trophy">🏆</span><span class="rc-banner-text">YOU WIN</span></div>
+        <div class="rc-table" role="table">
+          <div class="rc-row rc-head" role="row">
+            <span class="rc-pos">POS</span>
+            <span class="rc-car">DRIVER</span>
+            <span class="rc-laps">LAPS</span>
+            <span class="rc-gap">GAP</span>
+          </div>
+          <div class="rc-body"></div>
+        </div>
+      </div>
       <div class="result-verdict">
         <div class="result-badge">P2</div>
         <div class="result-gap">+0.000</div>
@@ -234,6 +333,28 @@ export function createResultScreen(container: HTMLElement, track: TrackData): Re
   const anFly = q('.an-fly');
   const anZoneList = q('.an-zone-list');
   const stripCanvas = q<HTMLCanvasElement>('.an-strip-canvas');
+
+  // multiplayer classification nodes
+  const rcBannerText = q('.rc-banner-text');
+  const rcBody = q('.rc-body');
+
+  // Render the 2-4 car finishing classification: a winner banner (YOU WIN /
+  // {name} WINS) plus one table row per entrant in finishing order.
+  const renderClassification = (entries: NonNullable<RaceResult['classification']>): void => {
+    const winner = entries.find((e) => e.position === 1) ?? entries[0];
+    rcBannerText.textContent = winner ? (winner.you ? 'YOU WIN' : `${winner.name} WINS`) : 'RACE OVER';
+    rcBody.innerHTML = entries.map((e) => {
+      const rowCls = `rc-row${e.position === 1 ? ' is-p1' : ''}${e.you ? ' is-you' : ''}`;
+      const name = esc(e.name) + (e.you ? ' <span class="rc-you-tag">(you)</span>' : '');
+      const gap = e.gapText && e.gapText.length ? esc(e.gapText) : '—';
+      return `<div class="${rowCls}" role="row">
+        <span class="rc-pos">P${e.position}</span>
+        <span class="rc-car"><span class="rc-swatch" style="background:${safeColor(e.color)}"></span><span class="rc-name">${name}</span></span>
+        <span class="rc-laps">${e.laps}</span>
+        <span class="rc-gap">${gap}</span>
+      </div>`;
+    }).join('');
+  };
 
   const bind = (sel: string, cb: () => void): void => q(sel).addEventListener('click', cb);
   let againCb: () => void, stratCb: () => void, menuCb: () => void;
@@ -429,6 +550,15 @@ export function createResultScreen(container: HTMLElement, track: TrackData): Re
     show(result: RaceResult): void {
       root.style.display = 'flex';
       root.classList.toggle('is-solo', !!result.solo);
+      // Multiplayer classification (2-4 cars) takes a dedicated panel; the
+      // single-player + 2-car verdict paths below are untouched.
+      const classify = result.mode === 'multiplayer' && !!result.classification;
+      root.classList.toggle('is-classification', classify);
+      if (classify) {
+        showGen++; // cancel any pending async debrief from a previous show
+        renderClassification(result.classification!);
+        return;
+      }
       const gen = ++showGen;
       const ahead = result.finalGap < 0;
       const v = result.verdict;

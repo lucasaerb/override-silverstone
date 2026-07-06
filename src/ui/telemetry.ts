@@ -30,7 +30,7 @@ import { PU, OVERRIDE, deployCapNormalW, deployCapOverrideW } from '../sim/const
 import { wrapS } from '../sim/track';
 
 export interface TelemetryHandle {
-  update(state: RaceState, track: TrackData, solo?: boolean): void;
+  update(state: RaceState, track: TrackData, solo?: boolean, localId?: string): void;
   setVisible(visible: boolean): void;
   /** flip the detailed panel; returns the new detail-visible state */
   toggle(): boolean;
@@ -297,8 +297,8 @@ export function createTelemetry(container: HTMLElement): TelemetryHandle {
       pwMode = 'coast';
     },
 
-    update(state: RaceState, track: TrackData, solo?: boolean): void {
-      const p = state.cars.find((c) => c.id === 'player');
+    update(state: RaceState, track: TrackData, solo?: boolean, localId?: string): void {
+      const p = state.cars.find((c) => c.id === (localId ?? 'player'));
       if (!p) return;
       // solo modes have no rival — hide the Manual Override / tow blocks
       el.ovr.style.display = solo ? 'none' : '';

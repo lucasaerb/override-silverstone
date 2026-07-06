@@ -155,6 +155,7 @@ export function makeCar(
     currentSectors: [],
     bestLap: null,
     finished: false,
+    finishTime: null,
     ...patch,
   };
 }

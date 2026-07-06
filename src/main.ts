@@ -62,6 +62,50 @@ function fmtLap(t: number): string {
   return `${m}:${(t - m * 60).toFixed(3).padStart(6, '0')}`;
 }
 
+interface NameLabel { sprite: THREE.Sprite; set(name: string, color: string): void }
+
+/** A camera-facing name pill that floats above a car (multiplayer). */
+function createNameLabel(): NameLabel {
+  const canvas = document.createElement('canvas');
+  canvas.width = 256;
+  canvas.height = 64;
+  const ctx = canvas.getContext('2d')!;
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false, depthWrite: false });
+  const sprite = new THREE.Sprite(mat);
+  sprite.scale.set(7, 1.75, 1);
+  sprite.renderOrder = 999;
+  let cur = '';
+  return {
+    sprite,
+    set(name: string, color: string): void {
+      const key = `${name}|${color}`;
+      if (key === cur) return;
+      cur = key;
+      ctx.clearRect(0, 0, 256, 64);
+      const r = 16;
+      ctx.fillStyle = 'rgba(9,11,15,0.74)';
+      ctx.beginPath();
+      ctx.moveTo(6 + r, 16);
+      ctx.arcTo(250, 16, 250, 48, r);
+      ctx.arcTo(250, 48, 6, 48, r);
+      ctx.arcTo(6, 48, 6, 16, r);
+      ctx.arcTo(6, 16, 250, 16, r);
+      ctx.fill();
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.arc(28, 32, 8, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#f4f6f8';
+      ctx.font = 'bold 26px system-ui, -apple-system, sans-serif';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(name.slice(0, 12).toUpperCase(), 46, 34);
+      tex.needsUpdate = true;
+    },
+  };
+}
+
 /** Weaken the optimal map so the overtake rival is strong-but-beatable: trim
  *  deploy in its two highest-value zones (leaves real time on the table exactly
  *  where a skilled player, with the Override edge, can take it). */
@@ -93,11 +137,24 @@ async function boot(): Promise<void> {
   scene.add(buildTrackMeshes(track).group);
   scene.add(buildEnvironment(track));
 
-  const models: Record<'player' | 'rival', CarModelHandle> = {
-    player: createCarModel({ livery: 'player' }),
-    rival: createCarModel({ livery: 'rival' }),
+  // up to 4 cars (2-4 player multiplayer); the first two double as the
+  // single-player player(papaya)/rival(teal) pair.
+  const carModels: CarModelHandle[] = (['player', 'rival', 'car3', 'car4'] as const).map((livery) => createCarModel({ livery }));
+  for (const m of carModels) scene.add(m.root);
+  carModels[2].root.visible = false;
+  carModels[3].root.visible = false;
+  const models = { player: carModels[0], rival: carModels[1] };
+  /** per-slot UI colours (match the car liveries) for labels / lobby / results */
+  const SLOT_COLORS = ['#ff8412', '#19b8b0', '#e23b52', '#7c5cff'];
+  const slotOf = (id: string): number => {
+    if (id === 'player') return 0;
+    if (id === 'rival') return 1;
+    const n = parseInt(id.slice(1), 10);
+    return Number.isFinite(n) ? n : 0;
   };
-  scene.add(models.player.root, models.rival.root);
+  // floating name labels above each car (multiplayer only)
+  const carLabels = carModels.map(() => createNameLabel());
+  for (const l of carLabels) { l.sprite.visible = false; scene.add(l.sprite); }
 
   // translucent ghost car (Time Trial) — hidden by default
   const ghostModel = createCarModel({ livery: 'player' });
@@ -187,13 +244,17 @@ async function boot(): Promise<void> {
   let spectate = false; // optimal mode: no manual player input
   let soloRace = false; // timetrial / optimal: rival hidden
 
-  // ---- multiplayer (head-to-head) state
+  // ---- multiplayer (2-4 player head-to-head) state
+  interface RosterEntry { peerId: string; name: string; carId: string; ready: boolean }
   let net: RoomHandle | null = null;
   let netRole: NetRole | null = null;
-  let youReady = false, themReady = false;
-  let netState: RaceState | null = null;       // guest: latest host snapshot (own-perspective)
-  const guestInput = { boostHeld: false, aggressiveness: 1 }; // host: latest received guest input
-  const myMpInput = { boostHeld: false, aggressiveness: 1 };  // guest: own input to send
+  let roster: RosterEntry[] = [];              // host-authoritative; broadcast to all
+  let lapsSetting: number = SIM.RACE_LAPS;     // host-chosen lap count
+  let localCarId = 'player';                   // this client's own car ('p0'..'p3' in MP)
+  let netState: RaceState | null = null;       // guest: latest host snapshot (all cars, raw ids)
+  const hostInputs = new Map<string, { boostHeld: boolean; aggressiveness: number }>(); // host: carId -> input
+  const myMpInput = { boostHeld: false, aggressiveness: 1 };  // local player's own input
+  let myName = 'Player';
   let lastNetSend = 0;
 
   // race capture
@@ -311,7 +372,7 @@ async function boot(): Promise<void> {
   // snapshots from its OWN perspective (its car re-labelled 'player') and sends
   // its live inputs back. No pre-race map: it's a pure manual-deploy skill duel.
   interface SnapCar {
-    id: string; s: number; lap: number; v: number; lat: number; pw: number; thr: number; brk: number;
+    id: string; nm?: string; s: number; lap: number; v: number; lat: number; pw: number; thr: number; brk: number;
     gear: number; tow: boolean; clt: number; laps: number[]; best: number | null; sect: number[]; fin: boolean;
     soc: number; harv: number; dep: number; ovrA: boolean; ovrArm: boolean; ovrBonus: number; boost: boolean; aggr: number;
   }
@@ -321,7 +382,7 @@ async function boot(): Promise<void> {
     return {
       time: st.time, phase: st.phase, lapsTotal: st.lapsTotal, gap: st.gapSeconds,
       cars: st.cars.map((c) => ({
-        id: c.id, s: c.s, lap: c.lap, v: c.v, lat: c.lateralOffset, pw: c.deployPowerW, thr: c.throttle, brk: c.brake,
+        id: c.id, nm: c.name, s: c.s, lap: c.lap, v: c.v, lat: c.lateralOffset, pw: c.deployPowerW, thr: c.throttle, brk: c.brake,
         gear: c.gear, tow: c.inTow, clt: c.currentLapTime, laps: c.lapTimes, best: c.bestLap, sect: c.currentSectors, fin: c.finished,
         soc: c.energy.soc, harv: c.energy.harvestedThisLap, dep: c.energy.deployedThisLap,
         ovrA: c.energy.overrideActive, ovrArm: c.energy.overrideArmed, ovrBonus: c.energy.overrideBonusRemaining,
@@ -329,75 +390,145 @@ async function boot(): Promise<void> {
       })),
     };
   }
-  function expandCar(s: SnapCar, id: 'player' | 'rival'): CarState {
+  function expandCar(s: SnapCar): CarState {
     return {
-      id, s: s.s, lap: s.lap, v: s.v, lateralOffset: s.lat, deployPowerW: s.pw, throttle: s.thr, brake: s.brk,
+      id: s.id, name: s.nm, s: s.s, lap: s.lap, v: s.v, lateralOffset: s.lat, deployPowerW: s.pw, throttle: s.thr, brake: s.brk,
       gear: s.gear, inTow: s.tow, currentLapTime: s.clt, lapTimes: s.laps, bestLap: s.best, currentSectors: s.sect,
-      finished: s.fin, totalTime: 0, aeroMode: 'Z', deployMap: emptyMap(track),
+      finished: s.fin, finishTime: null, totalTime: 0, aeroMode: 'Z', deployMap: emptyMap(track),
       inputs: { boostHeld: s.boost, aggressiveness: s.aggr },
       energy: { soc: s.soc, harvestedThisLap: s.harv, deployedThisLap: s.dep, overrideActive: s.ovrA, overrideArmed: s.ovrArm, overrideBonusRemaining: s.ovrBonus, lastDeployPowerW: s.pw },
     };
   }
-  /** Build the guest's own-perspective state: its car (host's 'rival') becomes
-   *  'player', the host's car becomes 'rival', and the gap sign flips. */
-  function guestPerspective(snap: Snap): RaceState {
-    const mine = snap.cars.find((c) => c.id === 'rival')!;
-    const theirs = snap.cars.find((c) => c.id === 'player')!;
+  /** guests rebuild the full N-car field from the host snapshot (raw ids); the
+   *  renderer focuses on localCarId, so no perspective swap is needed. */
+  function expandSnapshot(snap: Snap): RaceState {
     return {
       tick: 0, time: snap.time, phase: snap.phase as RaceState['phase'], session: 'race',
-      lapsTotal: snap.lapsTotal, gapSeconds: -snap.gap, events: [],
-      cars: [expandCar(mine, 'player'), expandCar(theirs, 'rival')],
+      lapsTotal: snap.lapsTotal, gapSeconds: snap.gap, events: [],
+      cars: snap.cars.map(expandCar),
     };
   }
 
+  interface MpResult { carId: string; name: string; finishTime: number | null; laps: number }
+
   function wireNet(): void {
     if (!net) return;
-    net.onPeer((connected) => {
-      if (connected) { lobby.setPhase('connected'); lobby.setStatus('Connected — ready up!'); lobby.setReady(youReady, themReady); }
-      else if (screen === 'lobby') { themReady = false; lobby.setStatus('Opponent left'); lobby.setPhase('choose'); }
-      else if (screen === 'race') { banners.push('OPPONENT LEFT', 'info', undefined, 3000); }
+    net.onPeerJoin(() => {
+      // a guest announces itself (with its name) to the host on connect
+      if (netRole === 'guest') net?.send({ t: 'join', name: myName });
+      updateLobbyPhase();
     });
-    net.onMessage((m) => handleNetMsg(m as { t: string; [k: string]: unknown }));
-    net.onInput((i) => { const inp = i as { boost?: boolean; aggr?: number }; guestInput.boostHeld = !!inp.boost; guestInput.aggressiveness = typeof inp.aggr === 'number' ? inp.aggr : 1; });
-    net.onState((s) => { netState = guestPerspective(s as Snap); });
+    net.onPeerLeave((peerId) => {
+      if (netRole === 'host') { roster = roster.filter((e) => e.peerId !== peerId); broadcastRoster(); }
+      if (screen === 'race') banners.push('A PLAYER LEFT', 'info', undefined, 2500);
+      updateLobbyPhase();
+    });
+    net.onMessage((m, from) => handleNetMsg(m as { t: string; [k: string]: unknown }, from));
+    net.onInput((i, from) => {
+      if (netRole !== 'host') return;
+      const entry = roster.find((e) => e.peerId === from);
+      if (!entry) return;
+      const inp = i as { boost?: boolean; aggr?: number };
+      hostInputs.set(entry.carId, { boostHeld: !!inp.boost, aggressiveness: typeof inp.aggr === 'number' ? inp.aggr : 1 });
+    });
+    net.onState((s) => { if (netRole === 'guest') netState = expandSnapshot(s as Snap); });
   }
 
-  function handleNetMsg(msg: { t: string; [k: string]: unknown }): void {
-    if (msg.t === 'ready') { themReady = true; lobby.setReady(youReady, themReady); }
-    else if (msg.t === 'start') { startMpGuest(); }
-    else if (msg.t === 'finish') { showMpResult(msg.gap as number); }
+  /** host: lowest free 'p{n}' slot id (0-3) */
+  function nextCarId(): string {
+    const used = new Set(roster.map((e) => e.carId));
+    for (let i = 0; i < 4; i++) if (!used.has(`p${i}`)) return `p${i}`;
+    return 'p3';
+  }
+  function hostAddOrUpdate(peerId: string, name: string): void {
+    const existing = roster.find((e) => e.peerId === peerId);
+    if (existing) { existing.name = name; }
+    else if (roster.length < 4) { roster.push({ peerId, name, carId: nextCarId(), ready: false }); }
+    broadcastRoster();
+  }
+  function broadcastRoster(): void {
+    if (netRole !== 'host') return;
+    net?.send({ t: 'roster', entries: roster, laps: lapsSetting });
+    applyRosterToLobby();
+  }
+  function applyRosterToLobby(): void {
+    const players = roster.map((e) => ({
+      name: e.name,
+      color: SLOT_COLORS[slotOf(e.carId)] ?? '#8a94a2',
+      ready: e.ready,
+      you: e.peerId === net?.selfId,
+      host: e.carId === 'p0',
+    }));
+    lobby.setRoster(players);
+    lobby.setLaps(lapsSetting);
+    lobby.setLapsEditable(netRole === 'host');
+    updateLobbyPhase();
+  }
+  function updateLobbyPhase(): void {
+    if (screen !== 'lobby') return;
+    if (roster.length >= 2) { lobby.setStatus('Connected — ready up!'); lobby.setPhase('connected'); }
+  }
+
+  function handleNetMsg(msg: { t: string; [k: string]: unknown }, from: string): void {
+    if (netRole === 'host') {
+      if (msg.t === 'join' || msg.t === 'name') hostAddOrUpdate(from, String(msg.name ?? 'Player'));
+      else if (msg.t === 'ready') { const e = roster.find((x) => x.peerId === from); if (e) { e.ready = !!msg.ready; broadcastRoster(); } }
+    } else {
+      if (msg.t === 'roster') { roster = msg.entries as RosterEntry[]; lapsSetting = Number(msg.laps) || SIM.RACE_LAPS; applyRosterToLobby(); }
+      else if (msg.t === 'start') { roster = msg.entries as RosterEntry[]; lapsSetting = Number(msg.laps) || SIM.RACE_LAPS; startMpRace(roster, lapsSetting, Number(msg.seed)); }
+      else if (msg.t === 'finish') { showMpResult(msg.results as MpResult[]); }
+    }
   }
 
   function hostStartMp(): void {
-    if (netRole !== 'host' || !(youReady && themReady)) return;
+    if (netRole !== 'host' || roster.length < 2 || !roster.every((e) => e.ready)) return;
     const seed = Math.floor(Math.random() * 1e6);
-    net?.send({ t: 'start', seed });
+    net?.send({ t: 'start', entries: roster, laps: lapsSetting, seed });
+    startMpRace(roster, lapsSetting, seed);
+  }
+
+  function startMpRace(entries: RosterEntry[], laps: number, seed: number): void {
     mode = 'multiplayer'; soloRace = false; spectate = false; netState = null;
-    race = new RaceController(track, { laps: SIM.RACE_LAPS, seed, playerMap: emptyMap(track), rivalMap: emptyMap(track), humanRival: true });
-    resetRaceCapture(); guestInput.boostHeld = false; guestInput.aggressiveness = 1;
-    race.start(3);
-    banners.clear(); banners.push('HEAD-TO-HEAD', 'info', 'hold SPACE to deploy — best strategist wins', 2600);
+    const mine = entries.find((e) => e.peerId === net?.selfId);
+    localCarId = mine ? mine.carId : entries[0].carId;
+    myMpInput.boostHeld = false; myMpInput.aggressiveness = 1;
+    hostInputs.clear();
+    if (netRole === 'host') {
+      hostInputs.set(localCarId, myMpInput); // host's own car uses the live local input object
+      for (const e of entries) if (e.carId !== localCarId) hostInputs.set(e.carId, { boostHeld: false, aggressiveness: 1 });
+      race = new RaceController(track, {
+        seed, laps,
+        cars: entries.map((e) => ({ id: e.carId, name: e.name, human: true, map: emptyMap(track) })),
+      });
+      resetRaceCapture();
+      race.start(3);
+    } else {
+      race = null; // guest renders host snapshots
+      resetRaceCapture();
+    }
+    banners.clear();
+    banners.push('HEAD-TO-HEAD', 'info', `${entries.length} cars · hold SPACE to deploy — best strategist wins`, 2600);
     setScreen('race');
   }
 
-  function startMpGuest(): void {
-    mode = 'multiplayer'; soloRace = false; spectate = false; race = null; netState = null;
-    resetRaceCapture();
-    banners.clear(); banners.push('HEAD-TO-HEAD', 'info', 'hold SPACE to deploy — best strategist wins', 2600);
-    setScreen('race');
-  }
-
-  function showMpResult(hostGap: number): void {
-    // guest perspective: gap is host(player)-minus-guest(rival); flip for the guest
-    const gap = netRole === 'guest' ? -hostGap : hostGap;
-    const won = gap < 0;
-    result.show({
-      playerWon: won, finalGap: gap, laps: SIM.RACE_LAPS, playerLaps: [], rivalLaps: [], gapHistory: [], playerEnergy: [], rivalEnergy: [],
-      playerMap: emptyMap(track), mode: 'multiplayer', solo: false,
-      verdict: { kind: won ? 'challenge-win' : 'challenge-loss', title: won ? 'YOU WIN' : 'YOU LOSE', note: won ? 'You out-deployed your rival.' : 'Closer next time — pick your deploy moments.' },
-    });
+  function showMpResult(results: MpResult[]): void {
+    const sorted = [...results].sort((a, b) => (a.finishTime ?? Infinity) - (b.finishTime ?? Infinity));
+    const winTime = sorted[0]?.finishTime ?? 0;
+    const classification = sorted.map((r, i) => ({
+      position: i + 1,
+      name: r.name,
+      color: SLOT_COLORS[slotOf(r.carId)] ?? '#8a94a2',
+      gapText: i === 0 ? '' : (r.finishTime != null ? `+${(r.finishTime - winTime).toFixed(3)}` : 'DNF'),
+      laps: r.laps,
+      you: r.carId === localCarId,
+    }));
     race = null; netState = null;
-    setScreen('result');
+    setScreen('result'); // hides all screens first, then show the result
+    result.show({
+      playerWon: !!classification[0]?.you, finalGap: 0, laps: lapsSetting,
+      playerLaps: [], rivalLaps: [], gapHistory: [], playerEnergy: [], rivalEnergy: [],
+      playerMap: emptyMap(track), mode: 'multiplayer', solo: false, classification,
+    });
   }
 
   function resetRaceCapture(): void {
@@ -407,21 +538,33 @@ async function boot(): Promise<void> {
 
   function leaveMp(): void {
     if (net) { net.leave(); net = null; }
-    netRole = null; youReady = false; themReady = false; netState = null;
+    netRole = null; roster = []; localCarId = 'player'; netState = null; hostInputs.clear();
   }
 
+  lobby.onName((name) => {
+    myName = name || 'Player';
+    if (netRole === 'host') { const e = roster.find((x) => x.peerId === net?.selfId); if (e) { e.name = myName; broadcastRoster(); } }
+    else net?.send({ t: 'name', name: myName });
+  });
+  lobby.onLaps((laps) => { if (netRole === 'host') { lapsSetting = laps; broadcastRoster(); } });
   lobby.onCreate(() => {
-    leaveMp(); netRole = 'host'; youReady = false; themReady = false;
+    leaveMp(); netRole = 'host'; myName = lobby.getName() || myName;
     const code = makeRoomCode();
     net = joinRoom(code, 'host'); wireNet();
-    lobby.setRole('host'); lobby.setCode(code); lobby.setPhase('hosting'); lobby.setStatus('Waiting for opponent…');
+    roster = [{ peerId: net.selfId, name: myName, carId: 'p0', ready: false }];
+    lobby.setRole('host'); lobby.setCode(code); lobby.setPhase('hosting'); lobby.setStatus('Waiting for players…');
+    applyRosterToLobby();
   });
   lobby.onJoin((code) => {
-    leaveMp(); netRole = 'guest'; youReady = false; themReady = false;
+    leaveMp(); netRole = 'guest'; myName = lobby.getName() || myName;
     net = joinRoom(code, 'guest'); wireNet();
     lobby.setRole('guest'); lobby.setCode(code); lobby.setPhase('joining'); lobby.setStatus('Connecting…');
+    net.send({ t: 'join', name: myName });
   });
-  lobby.onReady(() => { youReady = true; net?.send({ t: 'ready' }); lobby.setReady(youReady, themReady); });
+  lobby.onReady(() => {
+    if (netRole === 'host') { const e = roster.find((x) => x.peerId === net?.selfId); if (e) { e.ready = true; broadcastRoster(); } }
+    else net?.send({ t: 'ready', ready: true });
+  });
   lobby.onStart(() => hostStartMp());
   lobby.onLeave(() => { leaveMp(); setScreen('modeselect'); });
 
@@ -440,7 +583,7 @@ async function boot(): Promise<void> {
   });
 
   function playerCar(): CarState | undefined {
-    return activeState().cars.find((c) => c.id === 'player');
+    return activeState().cars.find((c) => c.id === localCarId);
   }
 
   // ---- input
@@ -449,14 +592,14 @@ async function boot(): Promise<void> {
     if (screen !== 'race') return;
     if (e.code === 'Space') {
       if (startLights.isArmed() && !jumpStarted) { jumpStarted = true; banners.push('JUMP START!', 'info', 'wait for lights out', 1200); }
-      if (netRole === 'guest') { myMpInput.boostHeld = true; net?.sendInput({ boost: true, aggr: myMpInput.aggressiveness }); }
+      if (netRole) { myMpInput.boostHeld = true; if (netRole === 'guest') net?.sendInput({ boost: true, aggr: myMpInput.aggressiveness }); }
       else if (!spectate) { const p = playerCar(); if (p) p.inputs.boostHeld = true; }
       e.preventDefault();
     } else if ((e.code === 'ArrowUp' || e.code === 'ArrowDown') && !spectate) {
       const d = e.code === 'ArrowUp' ? 0.05 : -0.05;
-      if (netRole === 'guest') {
+      if (netRole) {
         myMpInput.aggressiveness = Math.min(1.25, Math.max(0.5, myMpInput.aggressiveness + d));
-        net?.sendInput({ boost: myMpInput.boostHeld, aggr: myMpInput.aggressiveness });
+        if (netRole === 'guest') net?.sendInput({ boost: myMpInput.boostHeld, aggr: myMpInput.aggressiveness });
         banners.push(`DEPLOY TRIM ${(myMpInput.aggressiveness * 100).toFixed(0)}%`, 'info', undefined, 900);
       } else {
         const p = playerCar();
@@ -477,7 +620,7 @@ async function boot(): Promise<void> {
   });
   window.addEventListener('keyup', (e) => {
     if (e.code === 'Space') {
-      if (netRole === 'guest') { myMpInput.boostHeld = false; net?.sendInput({ boost: false, aggr: myMpInput.aggressiveness }); }
+      if (netRole) { myMpInput.boostHeld = false; if (netRole === 'guest') net?.sendInput({ boost: false, aggr: myMpInput.aggressiveness }); }
       else { const p = playerCar(); if (p) p.inputs.boostHeld = false; }
     }
   });
@@ -502,10 +645,18 @@ async function boot(): Promise<void> {
     if (!r) return;
     const st = r.getState();
     if (st.phase === 'finished') return;
+    // multiplayer host: drive every car from its player's latest inputs, then
+    // step. The MP result is a classification, so skip the 2-car capture charts.
+    if (netRole === 'host') {
+      for (const c of st.cars) {
+        const inp = hostInputs.get(c.id);
+        if (inp) { c.inputs.boostHeld = inp.boostHeld; c.inputs.aggressiveness = inp.aggressiveness; }
+      }
+      r.step();
+      return;
+    }
     const pc = st.cars.find((c) => c.id === 'player')!;
     const rc = st.cars.find((c) => c.id === 'rival')!;
-    // multiplayer host: drive the rival car from the guest's latest inputs
-    if (netRole === 'host') { rc.inputs.boostHeld = guestInput.boostHeld; rc.inputs.aggressiveness = guestInput.aggressiveness; }
     const pPrev = pc.lap, rPrev = rc.lap;
     const pSnap = { d: pc.energy.deployedThisLap, h: pc.energy.harvestedThisLap };
     const rSnap = { d: rc.energy.deployedThisLap, h: rc.energy.harvestedThisLap };
@@ -585,10 +736,11 @@ async function boot(): Promise<void> {
   }
 
   function finishRace(st: RaceState): void {
-    // multiplayer host: tell the guest, then show the simple win/lose result
+    // multiplayer host: build the classification, broadcast it, then show it
     if (mode === 'multiplayer' && netRole === 'host') {
-      net?.send({ t: 'finish', gap: st.gapSeconds });
-      showMpResult(st.gapSeconds);
+      const results: MpResult[] = st.cars.map((c) => ({ carId: c.id, name: c.name ?? c.id, finishTime: c.finishTime, laps: c.lap }));
+      net?.send({ t: 'finish', results });
+      showMpResult(results);
       return;
     }
     const p = st.cars.find((c) => c.id === 'player')!;
@@ -681,20 +833,51 @@ async function boot(): Promise<void> {
         st = activeState();
         if (netRole === 'host' && race && nowMs - lastNetSend > 33) { net?.sendState(snapshot(st)); lastNetSend = nowMs; }
       }
-      if (st) {
+      if (st && mode === 'multiplayer') {
+        // ---- 2-4 car multiplayer: pose every car by its colour slot, float a
+        // name label above each, and focus camera/HUD on the local player's car.
+        const local = st.cars.find((c) => c.id === localCarId) ?? st.cars[0];
+        for (const m of carModels) m.root.visible = false;
+        for (const l of carLabels) l.sprite.visible = false;
+        for (const c of st.cars) {
+          const slot = slotOf(c.id);
+          const model = carModels[slot];
+          const isLocal = c.id === local.id;
+          const pos = isLocal ? playerPos : scratch.pos;
+          poseCar(model, c, pos, isLocal ? playerFwd : scratch.fwd, dt);
+          model.root.visible = true;
+          const label = carLabels[slot];
+          label.set(c.name ?? `P${slot + 1}`, SLOT_COLORS[slot] ?? '#f4f6f8');
+          label.sprite.position.set(pos.x, 2.6, pos.z);
+          label.sprite.visible = true;
+        }
+        ghostModel.root.visible = false;
+        const order = st.cars.slice().sort((a, b) => (b.lap * track.length + b.s) - (a.lap * track.length + a.s));
+        const position = order.findIndex((c) => c.id === local.id) + 1;
+        // gap to the car directly ahead (positive = behind); drives the HUD + override
+        const ahead = position >= 2 ? order[position - 2] : null;
+        st.gapSeconds = ahead ? ((ahead.lap * track.length + ahead.s) - (local.lap * track.length + local.s)) / Math.max(local.v, 1) : 999;
+        hud.update(st, track, false, { localId: local.id, position, field: st.cars.length });
+        telemetry.setVisible(true);
+        telemetry.update(st, track, false, local.id);
+        minimap.update(st.cars, local.deployMap);
+        banners.tick(dt);
+        audio.updateEngine(local);
+        view.s = local.s; view.speed = local.v;
+        rig.update(dt, view);
+        sceneCtx.updateShadowFocus(playerPos);
+        if (overlayOpen) overlayMap.render();
+      } else if (st) {
         const p = st.cars.find((c) => c.id === 'player')!;
         const rc = st.cars.find((c) => c.id === 'rival')!;
-        // colour by role so both duellists agree: the host car is always papaya,
-        // the guest car always teal (the guest renders its own car with the teal
-        // model even though it's the local hero, so a shared view reads clearly)
-        const heroModel = netRole === 'guest' ? models.rival : models.player;
-        const oppModel = netRole === 'guest' ? models.player : models.rival;
-        poseCar(heroModel, p, playerPos, playerFwd, dt);
-        heroModel.root.visible = true;
-        oppModel.root.visible = !soloRace;
+        carModels[2].root.visible = false; carModels[3].root.visible = false;
+        for (const l of carLabels) l.sprite.visible = false;
+        poseCar(models.player, p, playerPos, playerFwd, dt);
+        models.player.root.visible = true;
+        models.rival.root.visible = !soloRace;
         if (!soloRace) {
-          poseCar(oppModel, rc, scratch.pos, scratch.fwd, dt);
-          if (netRole !== 'guest') p.inTow = rc.lap * track.length + rc.s > p.lap * track.length + p.s && st.gapSeconds > 0 && st.gapSeconds < 1.2;
+          poseCar(models.rival, rc, scratch.pos, scratch.fwd, dt);
+          p.inTow = rc.lap * track.length + rc.s > p.lap * track.length + p.s && st.gapSeconds > 0 && st.gapSeconds < 1.2;
         }
         if (mode === 'timetrial') poseGhost(p, dt); else ghostModel.root.visible = false;
         hud.update(st, track, soloRace);

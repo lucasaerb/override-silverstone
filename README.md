@@ -92,11 +92,12 @@ A first-run **click-through tutorial** teaches the core loop (re-openable any ti
   lap while you watch and learn.
 - **Overtake Challenge** — start 1.0 s behind a strong (near-optimal) rival over 3 laps; use
   your within-1-second **Manual Override** edge (extra power + 0.5 MJ) to pass and hold the lead.
-- **Head-to-Head (2 players)** — race a friend with a share code. **No server hosts the
-  session**: WebRTC runs peer-to-peer (via trystero's public relays for cross-device signaling,
-  or BroadcastChannel for two tabs on the same machine). Same car, same grip — the better
-  energy strategist wins. It's a pure manual-deploy duel: both hold **SPACE** to spend, and
-  whoever picks their moments better takes it. Host-authoritative netcode keeps both cars in sync.
+- **Head-to-Head (2–4 players)** — race up to three friends with a share code. Enter your
+  name, pick the lap count, and everyone lines up on a colour-coded grid with floating name
+  labels. **No server hosts the session**: WebRTC runs peer-to-peer (via trystero's public
+  relays for cross-device signaling, or BroadcastChannel for tabs on the same machine). Same
+  car, same grip — the better energy strategist wins. Host-authoritative netcode keeps every
+  car in sync; the race ends on a full finishing **classification** with a clear winner.
 
 Every race starts with a real **F1 five-red-lights** launch sequence; grandstands are packed
 with crowds, and the **Landostand** stands over Stowe in Lando's yellow-and-black.

@@ -27,7 +27,7 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { makeCanvasTexture, mulberry32 } from './utils';
 
-export type LiveryId = 'player' | 'rival';
+export type LiveryId = 'player' | 'rival' | 'car3' | 'car4';
 
 export interface CarModelHandle {
   root: THREE.Group;
@@ -76,6 +76,16 @@ const PALETTES: Record<LiveryId, Palette> = {
     base: '#0e6b72', base2: '#0a4a50', dark: '#0d0f12', accent: '#c9ced6',
     number: '11', pod: '#ffc400', helmet: '#c9ced6', helmetStripe: '#0e6b72',
     glove: '#12878f',
+  },
+  car3: {
+    base: '#c81f3c', base2: '#8f1229', dark: '#141013', accent: '#f4f6f8',
+    number: '16', pod: '#0d0e11', helmet: '#f4f6f8', helmetStripe: '#c81f3c',
+    glove: '#c81f3c',
+  },
+  car4: {
+    base: '#6a4bd6', base2: '#452c9c', dark: '#100f17', accent: '#e6e2ff',
+    number: '4', pod: '#0d0e11', helmet: '#e6e2ff', helmetStripe: '#6a4bd6',
+    glove: '#6a4bd6',
   },
 };
 

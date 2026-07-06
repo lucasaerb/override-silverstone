@@ -15,13 +15,13 @@ export interface DebugHooks {
   step(n: number): void;
   setTimeScale(scale: number): void;
   setSeed(seed: number): void;
-  setDeploy(carId: 'player' | 'rival', zoneId: number, level: number): void;
+  setDeploy(carId: string, zoneId: number, level: number): void;
   setBoost(held: boolean): void;
   setCamera(name: 'chase' | 'onboard' | 'trackside'): void;
   getScreen(): string;
   goto(screen: 'menu' | 'modeselect' | 'strategy' | 'race' | 'result' | 'lobby'): void;
   getProjection(): { lapTime: number; deployedMJ: number } | null;
-  setMap(carId: 'player' | 'rival', map: DeployMap): void;
+  setMap(carId: string, map: DeployMap): void;
   getMode(): string;
   setMode(mode: string): void;
 }

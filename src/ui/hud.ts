@@ -20,7 +20,7 @@ import { PU, OVERRIDE } from '../sim/constants';
 import { wrapS } from '../sim/track';
 
 export interface HudHandle {
-  update(state: RaceState, track: TrackData, solo?: boolean): void;
+  update(state: RaceState, track: TrackData, solo?: boolean, mp?: { localId?: string; position?: number; field?: number }): void;
 }
 
 /** distance-to-detection-line window in which the chip shows ELIGIBLE, m */
@@ -150,8 +150,8 @@ export function createHud(container: HTMLElement): HudHandle {
   let lastEmaMs = 0;
 
   return {
-    update(state: RaceState, track: TrackData, solo?: boolean): void {
-      const player = state.cars.find((c) => c.id === 'player');
+    update(state: RaceState, track: TrackData, solo?: boolean, mp?: { localId?: string; position?: number; field?: number }): void {
+      const player = state.cars.find((c) => c.id === (mp?.localId ?? 'player'));
       if (!player) return;
 
       // solo modes (time trial / optimal) have no rival — hide the gap/position
@@ -160,9 +160,10 @@ export function createHud(container: HTMLElement): HudHandle {
       el.topCenter.style.display = solo ? 'none' : '';
       el.ovrBlock.style.display = solo ? 'none' : '';
 
-      // ---- top center: position + gap
+      // ---- top center: position + gap (in N-car multiplayer the caller supplies
+      // the finishing-order position and sets state.gapSeconds to the gap ahead)
       const gap = state.gapSeconds;
-      setText(el.pos, gap < 0 ? 'P1' : 'P2');
+      setText(el.pos, mp?.position ? `P${mp.position}` : gap < 0 ? 'P1' : 'P2');
       if (prevGap != null) gapTrend += (gap - prevGap - gapTrend) * 0.05;
       prevGap = gap;
       setText(el.gap, `${gap >= 0 ? '+' : '-'}${Math.abs(gap).toFixed(3)}`);

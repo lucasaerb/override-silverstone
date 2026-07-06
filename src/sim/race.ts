@@ -37,6 +37,18 @@ export interface RaceOptions {
   /** grid gap the player starts behind the rival, m (overtake challenge uses a
    *  larger value); default GRID_P2_BACK_M. */
   playerStartBackM?: number;
+  /** N-car (2-4) grid for multiplayer. When given, overrides the player/rival
+   *  construction: the controller runs exactly these cars in array order. */
+  cars?: CarSpec[];
+}
+
+/** One entrant on an N-car (2-4) grid. */
+export interface CarSpec {
+  id: string;
+  name?: string;
+  /** human = external inputs each tick (skip AI); false = AI-driven */
+  human: boolean;
+  map?: DeployMap;
 }
 
 // ---------------------------------------------------------------- constants
@@ -45,6 +57,8 @@ const COUNTDOWN_S = 3.0;
 /** grid slots behind the S/F line, m */
 const GRID_P1_BACK_M = 12;
 const GRID_P2_BACK_M = 20;
+/** per-row grid spacing for the N-car (multiplayer) grid, m */
+const GRID_ROW_M = 8;
 /** alternating grid-box lateral offset, m */
 const GRID_LATERAL_M = 2.5;
 
@@ -103,6 +117,7 @@ function createCar(id: CarState['id'], map: DeployMap, s: number, lateral: numbe
     currentSectors: [],
     bestLap: null,
     finished: false,
+    finishTime: null,
   };
 }
 
@@ -140,12 +155,17 @@ export class RaceController {
   private readonly rng: Rng;
   private readonly player: CarState;
   private readonly rival: CarState;
-  private readonly ctl: Record<'player' | 'rival', CarCtl>;
+  private readonly ctl: Record<string, CarCtl>;
   private countdownTicks = 0;
-  private leaderId: 'player' | 'rival' = 'rival';
+  private leaderId: string = 'rival';
   private winnerTime: number | null = null;
   private readonly solo: boolean;
   private readonly humanRival: boolean;
+  /** true for the classic 2-car player/rival grid (single-player). N-car
+   *  multiplayer grids take the generalized stepN() path. */
+  private readonly twoCar: boolean;
+  /** car ids driven by the AI (skip external inputs) */
+  private readonly aiIds: Set<string>;
 
   constructor(track: TrackData, opts: RaceOptions) {
     this.track = track;
@@ -154,27 +174,52 @@ export class RaceController {
     this.rng = new Rng(opts.seed);
     this.solo = opts.solo ?? false;
     this.humanRival = opts.humanRival ?? false;
-    // grid: rival on pole ahead of the player, alternating grid-box sides
-    this.player = createCar(
-      'player',
-      cloneDeployMap(opts.playerMap ?? AI_MAPS.balanced),
-      track.length - (opts.playerStartBackM ?? GRID_P2_BACK_M),
-      -GRID_LATERAL_M,
-    );
-    this.rival = createCar(
-      'rival',
-      cloneDeployMap(opts.rivalMap ?? AI_MAPS[opts.rivalSkill ?? 'balanced']),
-      track.length - GRID_P1_BACK_M,
-      GRID_LATERAL_M,
-    );
-    this.ctl = { player: newCtl(), rival: newCtl() };
+
+    let cars: CarState[];
+    if (opts.cars && opts.cars.length >= 2) {
+      // N-car (2-4) multiplayer grid: entrants in array order, staggered rows
+      // front-to-back with alternating grid-box sides. cars[0] starts on pole.
+      this.twoCar = false;
+      this.aiIds = new Set(opts.cars.filter((c) => !c.human).map((c) => c.id));
+      cars = opts.cars.map((spec, i) => {
+        const car = createCar(
+          spec.id,
+          cloneDeployMap(spec.map ?? AI_MAPS.balanced),
+          track.length - (GRID_P1_BACK_M + i * GRID_ROW_M),
+          (i % 2 === 0 ? 1 : -1) * GRID_LATERAL_M,
+        );
+        car.name = spec.name;
+        return car;
+      });
+      this.player = cars[0];
+      this.rival = cars[1];
+      this.leaderId = cars[0].id;
+    } else {
+      // classic 2-car player/rival grid (single-player): rival on pole ahead
+      this.twoCar = true;
+      this.aiIds = new Set(this.humanRival ? [] : ['rival']);
+      this.player = createCar(
+        'player',
+        cloneDeployMap(opts.playerMap ?? AI_MAPS.balanced),
+        track.length - (opts.playerStartBackM ?? GRID_P2_BACK_M),
+        -GRID_LATERAL_M,
+      );
+      this.rival = createCar(
+        'rival',
+        cloneDeployMap(opts.rivalMap ?? AI_MAPS[opts.rivalSkill ?? 'balanced']),
+        track.length - GRID_P1_BACK_M,
+        GRID_LATERAL_M,
+      );
+      cars = [this.player, this.rival];
+    }
+    this.ctl = Object.fromEntries(cars.map((c) => [c.id, newCtl()]));
     this.state = {
       tick: 0,
       time: 0,
       phase: 'grid',
       session: opts.session ?? 'race',
       lapsTotal: opts.laps ?? SIM.RACE_LAPS,
-      cars: [this.player, this.rival],
+      cars,
       gapSeconds: 0,
       events: [],
     };
@@ -208,6 +253,7 @@ export class RaceController {
       return;
     }
     const t = st.time;
+    if (!this.twoCar) { this.stepN(t); return; }
     if (this.solo) {
       // solo hot-lap: only the player runs, with no other car (no tow); the
       // rival stays parked on the grid and is hidden by the renderer.
@@ -246,7 +292,7 @@ export class RaceController {
     return car.lap * this.track.length + car.s;
   }
 
-  private leaderNow(): 'player' | 'rival' {
+  private leaderNow(): string {
     const p = this.progress(this.player);
     const r = this.progress(this.rival);
     if (p === r) return this.leaderId; // ties keep the current order
@@ -261,6 +307,125 @@ export class RaceController {
     return p > r
       ? -timeGapSeconds(this.rival, this.player, this.track)
       : timeGapSeconds(this.player, this.rival, this.track);
+  }
+
+  // ---------------------------------------------- N-car (multiplayer) stepping
+
+  /** Advance an N-car (2-4) grid one tick. All entrants are typically human
+   *  (inputs set externally); each drafts the car directly ahead. */
+  private stepN(t: number): void {
+    const st = this.state;
+    for (const car of st.cars) {
+      if (this.aiIds.has(car.id) && !car.finished) {
+        updateAi(car, this.carAhead(car) ?? this.leaderCar(), this.track, this.rng, t, st.lapsTotal);
+      }
+    }
+    for (const car of st.cars) {
+      if (!car.finished) this.stepOne(car, this.carAhead(car), t);
+    }
+    st.time = t + SIM.DT;
+    this.updateLateralN(SIM.DT);
+
+    const order = this.computeOrder();
+    if (order[0] !== this.leaderId && !st.cars.every((c) => c.finished)) {
+      const leader = st.cars.find((c) => c.id === order[0])!;
+      this.emit('overtake', order[0], { lap: leader.lap });
+      this.leaderId = order[0];
+    }
+    // HUD reads gapSeconds as the local player's gap to the car directly ahead
+    st.gapSeconds = this.gapToAhead(this.player);
+    if (st.cars.every((c) => c.finished)) st.phase = 'finished';
+  }
+
+  /** the car physically just ahead of `car` on the road (nearest greater progress) */
+  private carAhead(car: CarState): CarState | null {
+    const myProg = this.progress(car);
+    let best: CarState | null = null;
+    let bestGap = Infinity;
+    for (const o of this.state.cars) {
+      if (o === car) continue;
+      const d = this.progress(o) - myProg;
+      if (d > 0 && d < bestGap) { bestGap = d; best = o; }
+    }
+    return best;
+  }
+
+  private leaderCar(): CarState {
+    return this.state.cars.reduce((a, b) => (this.progress(b) > this.progress(a) ? b : a));
+  }
+
+  /** car ids ordered by track position, leader first */
+  private computeOrder(): string[] {
+    return this.state.cars
+      .slice()
+      .sort((a, b) => this.progress(b) - this.progress(a))
+      .map((c) => c.id);
+  }
+
+  /** positive time gap from `car` back to the car directly ahead (0 if leading) */
+  private gapToAhead(car: CarState): number {
+    const ahead = this.carAhead(car);
+    return ahead ? timeGapSeconds(car, ahead, this.track) : 0;
+  }
+
+  /** N-car lateral choreography: each car may pull alongside the car ahead; a
+   *  final pass keeps every close pair laterally separated so none overlap. */
+  private updateLateralN(dt: number): void {
+    const cars = this.state.cars;
+    for (const me of cars) {
+      const ahead = this.carAhead(me);
+      const cs = this.ctl[me.id];
+      const delta = ahead ? sDelta(this.track, me.s, ahead.s) : Infinity; // >0: ahead is in front
+      if (!cs.attacking) {
+        if (ahead && delta > 0 && ((me.v > ahead.v + ATTACK_CLOSING_MS && delta <= ATTACK_RANGE_M) || delta <= PROX_RANGE_M)) {
+          cs.attacking = true;
+          cs.side = this.pickSide(me, ahead, delta);
+        }
+      } else if (!ahead || delta <= -CLEAR_AHEAD_M || delta > ATTACK_RANGE_M || (delta > PROX_EXIT_M && (!ahead || me.v <= ahead.v))) {
+        cs.attacking = false;
+      }
+      const target = cs.attacking ? cs.side * ATTACK_OFFSET_M : 0;
+      const step = LATERAL_EASE_RATE * dt;
+      const diff = target - me.lateralOffset;
+      me.lateralOffset += Math.abs(diff) <= step ? diff : Math.sign(diff) * step;
+    }
+    this.separateOverlaps();
+  }
+
+  /** Guarantee no two cars visually overlap: group cars by along-track
+   *  proximity, then spread each clump into MIN_LATERAL_SEP-spaced lanes
+   *  (recentred on the clump's mean so it stays on the road). One pass. */
+  private separateOverlaps(): void {
+    const cars = this.state.cars.filter((c) => !c.finished);
+    const n = cars.length;
+    if (n < 2) return;
+    // union-find clumps of cars within OVERLAP_SPAN_M along the track
+    const parent = cars.map((_, i) => i);
+    const find = (x: number): number => { while (parent[x] !== x) { parent[x] = parent[parent[x]]; x = parent[x]; } return x; };
+    for (let i = 0; i < n; i++) {
+      for (let j = i + 1; j < n; j++) {
+        if (Math.abs(sDelta(this.track, cars[i].s, cars[j].s)) < OVERLAP_SPAN_M) parent[find(i)] = find(j);
+      }
+    }
+    const groups = new Map<number, CarState[]>();
+    for (let i = 0; i < n; i++) {
+      const r = find(i);
+      const g = groups.get(r);
+      if (g) g.push(cars[i]); else groups.set(r, [cars[i]]);
+    }
+    for (const g of groups.values()) {
+      if (g.length < 2) continue;
+      g.sort((a, b) => a.lateralOffset - b.lateralOffset);
+      const meanBefore = g.reduce((s, c) => s + c.lateralOffset, 0) / g.length;
+      for (let k = 1; k < g.length; k++) {
+        const minPos = g[k - 1].lateralOffset + MIN_LATERAL_SEP_M;
+        if (g[k].lateralOffset < minPos) g[k].lateralOffset = minPos;
+      }
+      // recentre the spaced clump on its original mean so it stays on-track
+      const meanAfter = g.reduce((s, c) => s + c.lateralOffset, 0) / g.length;
+      const shift = meanBefore - meanAfter;
+      for (const c of g) c.lateralOffset += shift;
+    }
   }
 
   private stepOne(car: CarState, other: CarState | null, t: number): void {
@@ -315,22 +480,28 @@ export class RaceController {
     const lapTime = car.lapTimes[car.lapTimes.length - 1];
     this.emit('lap-complete', car.id, { lap: prevLap, lapTime });
 
-    const otherCar = car.id === 'player' ? this.rival : this.player;
-    // finish: first car to complete lapsTotal takes the flag; the other car
+    // finish: first car to complete lapsTotal takes the flag; every other car
     // then finishes at its OWN next crossing, whatever its lap count. Ties on
-    // the same tick resolve rival-first (fixed step order) — deterministic.
-    if (prevLap >= this.state.lapsTotal || otherCar.finished) {
+    // the same tick resolve by fixed step order — deterministic. Generalized to
+    // N cars: `winnerTime !== null` means someone has already taken the flag
+    // (equivalent to the other car being finished in the 2-car case).
+    if (prevLap >= this.state.lapsTotal || this.winnerTime !== null) {
       car.finished = true;
       // exact crossing time: end-of-tick time minus the overshoot past the line
       cs.finishTime = t + SIM.DT - car.currentLapTime;
+      car.finishTime = cs.finishTime;
       if (this.winnerTime === null) {
         this.winnerTime = cs.finishTime;
-        this.emit('finish', car.id, { gap: this.computeGap(), laps: prevLap });
+        this.emit('finish', car.id, { gap: this.twoCar ? this.computeGap() : 0, laps: prevLap });
       } else {
-        const margin = cs.finishTime - this.winnerTime;
-        const gap = car.id === 'player' ? margin : -margin; // player-minus-rival
-        this.state.gapSeconds = gap;
-        this.emit('finish', car.id, { gap, laps: prevLap });
+        const margin = cs.finishTime - this.winnerTime; // seconds behind the winner
+        if (this.twoCar) {
+          const gap = car.id === 'player' ? margin : -margin; // player-minus-rival
+          this.state.gapSeconds = gap;
+          this.emit('finish', car.id, { gap, laps: prevLap });
+        } else {
+          this.emit('finish', car.id, { gap: margin, laps: prevLap });
+        }
       }
     }
   }

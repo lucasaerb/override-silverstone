@@ -126,7 +126,11 @@ export interface CarInputs {
 }
 
 export interface CarState {
-  id: 'player' | 'rival';
+  /** 'player' = the local hero; 'rival' the 2-car opponent; 'car2'/'car3' extra
+   *  multiplayer entrants. Widened to string for 2-4 car races. */
+  id: string;
+  /** display name (multiplayer); undefined falls back to a default label */
+  name?: string;
   s: number;
   lap: number;
   /** m/s */
@@ -151,6 +155,8 @@ export interface CarState {
   currentSectors: number[];
   bestLap: number | null;
   finished: boolean;
+  /** exact S/F-crossing race time when this car finished, s (null until finished) */
+  finishTime: number | null;
 }
 
 // ---------------------------------------------------------------- race
@@ -167,7 +173,7 @@ export interface RaceEvent {
     | 'overtake'
     | 'energy-depleted'
     | 'finish';
-  carId: 'player' | 'rival';
+  carId: string;
   data?: Record<string, number | string>;
 }
 
@@ -194,7 +200,7 @@ export interface GameDebugApi {
   /** 0 = paused; 1 = realtime; up to ~50 for fast-forward */
   setTimeScale(scale: number): void;
   setSeed(seed: number): void;
-  setDeploy(carId: 'player' | 'rival', zoneId: number, level: number): void;
+  setDeploy(carId: string, zoneId: number, level: number): void;
   setBoost(held: boolean): void;
   setCamera(name: 'chase' | 'onboard' | 'trackside'): void;
   /** any uncaught errors collected since boot */
@@ -208,7 +214,7 @@ export interface GameDebugApi {
   /** the strategy screen's last lap projection, or null if none computed */
   getProjection(): { lapTime: number; deployedMJ: number } | null;
   /** replace a car's whole deployment map */
-  setMap(carId: 'player' | 'rival', map: DeployMap): void;
+  setMap(carId: string, map: DeployMap): void;
   /** current game mode: 'timetrial' | 'optimal' | 'overtake' | 'multiplayer' */
   getMode(): string;
   /** set the game mode (used by the E2E harness before goto) */

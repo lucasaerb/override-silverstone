@@ -225,7 +225,7 @@ describe('standing start', () => {
     const state = rc.getState();
     rc.start();
     while (state.phase === 'countdown') rc.step();
-    const launched = { player: false, rival: false };
+    const launched: Record<string, boolean> = { player: false, rival: false };
     let probes = 0;
     while ((!launched.player || !launched.rival) && state.tick < 120 * 30) {
       rc.step();
@@ -282,5 +282,63 @@ describe('THE BALANCE PROOF', () => {
     expect(run.state.gapSeconds).toBeGreaterThan(0); // player behind
     // eslint-disable-next-line no-console
     console.log(`sanity inverse: player loses by ${run.state.gapSeconds.toFixed(3)} s`);
+  });
+});
+
+describe('N-car (multiplayer) grid', () => {
+  it('runs a 4-car race to a clean classification with one winner', () => {
+    const rc = new RaceController(track, {
+      seed: 7,
+      laps: 2,
+      cars: [
+        { id: 'p0', name: 'Alice', human: true, map: PERFECT_MAP },
+        { id: 'p1', name: 'Bob', human: true, map: AI_MAPS.balanced },
+        { id: 'p2', name: 'Cara', human: true, map: AI_MAPS.balanced },
+        { id: 'p3', name: 'Dan', human: true, map: ZERO_MAP },
+      ],
+    });
+    const st = rc.getState();
+    expect(st.cars).toHaveLength(4);
+    expect(st.cars.map((c) => c.name)).toEqual(['Alice', 'Bob', 'Cara', 'Dan']);
+    rc.start(0);
+    let guard = 0;
+    while (st.phase !== 'finished' && guard < 120 * 400) { rc.step(); guard++; }
+    expect(st.phase).toBe('finished');
+    // every car finished with a recorded finish time
+    expect(st.cars.every((c) => c.finished && c.finishTime !== null)).toBe(true);
+    // exactly one winner (min finish time), and each finish emitted an event
+    const finishes = st.events.filter((e) => e.kind === 'finish');
+    expect(finishes).toHaveLength(4);
+    const winner = st.cars.reduce((a, b) => (a.finishTime! <= b.finishTime! ? a : b));
+    // the strongest map (Alice) should not be beaten by the zero map (Dan)
+    const alice = st.cars.find((c) => c.id === 'p0')!;
+    const dan = st.cars.find((c) => c.id === 'p3')!;
+    expect(alice.finishTime!).toBeLessThan(dan.finishTime!);
+    // eslint-disable-next-line no-console
+    console.log(`4-car race winner: ${winner.name} @ ${winner.finishTime!.toFixed(2)}s`);
+  });
+
+  it('keeps all four cars laterally separated (no overlap) throughout', () => {
+    const rc = new RaceController(track, {
+      seed: 3,
+      laps: 1,
+      cars: [0, 1, 2, 3].map((i) => ({ id: `p${i}`, human: true, map: AI_MAPS.balanced })),
+    });
+    const st = rc.getState();
+    rc.start(0);
+    let guard = 0;
+    while (st.phase !== 'finished' && guard < 120 * 300) {
+      rc.step();
+      for (let i = 0; i < st.cars.length; i++) {
+        for (let j = i + 1; j < st.cars.length; j++) {
+          const a = st.cars[i], b = st.cars[j];
+          if (Math.abs(sDelta(track, a.s, b.s)) < 5.5 && !a.finished && !b.finished) {
+            expect(Math.abs(a.lateralOffset - b.lateralOffset)).toBeGreaterThanOrEqual(2.5);
+          }
+        }
+      }
+      guard++;
+    }
+    expect(st.phase).toBe('finished');
   });
 });

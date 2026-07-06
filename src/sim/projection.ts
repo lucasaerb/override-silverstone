@@ -81,6 +81,7 @@ function makeCar(map: DeployMap): CarState {
     currentSectors: [],
     bestLap: null,
     finished: false,
+    finishTime: null,
   };
 }
 

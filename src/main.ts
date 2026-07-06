@@ -62,50 +62,6 @@ function fmtLap(t: number): string {
   return `${m}:${(t - m * 60).toFixed(3).padStart(6, '0')}`;
 }
 
-interface NameLabel { sprite: THREE.Sprite; set(name: string, color: string): void }
-
-/** A camera-facing name pill that floats above a car (multiplayer). */
-function createNameLabel(): NameLabel {
-  const canvas = document.createElement('canvas');
-  canvas.width = 256;
-  canvas.height = 64;
-  const ctx = canvas.getContext('2d')!;
-  const tex = new THREE.CanvasTexture(canvas);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false, depthWrite: false });
-  const sprite = new THREE.Sprite(mat);
-  sprite.scale.set(7, 1.75, 1);
-  sprite.renderOrder = 999;
-  let cur = '';
-  return {
-    sprite,
-    set(name: string, color: string): void {
-      const key = `${name}|${color}`;
-      if (key === cur) return;
-      cur = key;
-      ctx.clearRect(0, 0, 256, 64);
-      const r = 16;
-      ctx.fillStyle = 'rgba(9,11,15,0.74)';
-      ctx.beginPath();
-      ctx.moveTo(6 + r, 16);
-      ctx.arcTo(250, 16, 250, 48, r);
-      ctx.arcTo(250, 48, 6, 48, r);
-      ctx.arcTo(6, 48, 6, 16, r);
-      ctx.arcTo(6, 16, 250, 16, r);
-      ctx.fill();
-      ctx.fillStyle = color;
-      ctx.beginPath();
-      ctx.arc(28, 32, 8, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.fillStyle = '#f4f6f8';
-      ctx.font = 'bold 26px system-ui, -apple-system, sans-serif';
-      ctx.textBaseline = 'middle';
-      ctx.fillText(name.slice(0, 12).toUpperCase(), 46, 34);
-      tex.needsUpdate = true;
-    },
-  };
-}
-
 /** Weaken the optimal map so the overtake rival is strong-but-beatable: trim
  *  deploy in its two highest-value zones (leaves real time on the table exactly
  *  where a skilled player, with the Override edge, can take it). */
@@ -153,8 +109,6 @@ async function boot(): Promise<void> {
     return Number.isFinite(n) ? n : 0;
   };
   // floating name labels above each car (multiplayer only)
-  const carLabels = carModels.map(() => createNameLabel());
-  for (const l of carLabels) { l.sprite.visible = false; scene.add(l.sprite); }
 
   // translucent ghost car (Time Trial) — hidden by default
   const ghostModel = createCarModel({ livery: 'player' });
@@ -1008,11 +962,10 @@ async function boot(): Promise<void> {
         if (netRole === 'host' && race && nowMs - lastNetSend > 33) { net?.sendState(snapshot(st)); lastNetSend = nowMs; }
       }
       if (st && mode === 'multiplayer') {
-        // ---- 2-4 car multiplayer: pose every car by its colour slot, float a
-        // name label above each, and focus camera/HUD on the local player's car.
+        // ---- 2-4 car multiplayer: pose every car by its colour slot and focus
+        // camera/HUD on the local player's car (names are shown in the results).
         const local = st.cars.find((c) => c.id === localCarId) ?? st.cars[0];
         for (const m of carModels) m.root.visible = false;
-        for (const l of carLabels) l.sprite.visible = false;
         for (const c of st.cars) {
           const slot = slotOf(c.id);
           const model = carModels[slot];
@@ -1020,10 +973,6 @@ async function boot(): Promise<void> {
           const pos = isLocal ? playerPos : scratch.pos;
           poseCar(model, c, pos, isLocal ? playerFwd : scratch.fwd, dt);
           model.root.visible = true;
-          const label = carLabels[slot];
-          label.set(c.name ?? `P${slot + 1}`, SLOT_COLORS[slot] ?? '#f4f6f8');
-          label.sprite.position.set(pos.x, 2.6, pos.z);
-          label.sprite.visible = true;
         }
         ghostModel.root.visible = false;
         const order = st.cars.slice().sort((a, b) => (b.lap * track.length + b.s) - (a.lap * track.length + a.s));
@@ -1045,7 +994,6 @@ async function boot(): Promise<void> {
         const p = st.cars.find((c) => c.id === 'player')!;
         const rc = st.cars.find((c) => c.id === 'rival')!;
         carModels[2].root.visible = false; carModels[3].root.visible = false;
-        for (const l of carLabels) l.sprite.visible = false;
         poseCar(models.player, p, playerPos, playerFwd, dt);
         models.player.root.visible = true;
         models.rival.root.visible = !soloRace;
